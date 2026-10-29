@@ -11,9 +11,11 @@ targets Minecraft 26.3.
 
 ## Build
 
-Requires Java 25 (Gradle daemon and compile toolchain; a JDK 25 is provisioned
-through the foojay resolver when missing). The first build downloads the
-Minecraft 26.3 client and assets and takes several minutes.
+Requires an installed JDK 25 (any vendor): Gradle auto-detects it, or set
+`JAVA_HOME` / `org.gradle.java.home` to point at it. The foojay resolver in
+`settings.gradle` only provisions the compile toolchain, not the Gradle daemon.
+The first build downloads the Minecraft 26.3 client and assets and takes
+several minutes.
 
 ```bash
 ./gradlew build

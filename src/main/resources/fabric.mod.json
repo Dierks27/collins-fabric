@@ -8,9 +8,8 @@
   "contributors": ["dlyavasnet"],
   "icon": "assets/collins-fabric/icon.png",
   "contact": {
-    "sources": "https://github.com/imsawiq/collins",
-    "issues": "https://github.com/imsawiq/collins/issues",
-    "discord": "https://discord.gg/jsH9bGj2NU"
+    "sources": "https://github.com/Dierks27/collins-fabric",
+    "issues": "https://github.com/Dierks27/collins-fabric/issues"
   },
   "license": "GPL-3.0-or-later",
   "environment": "*",

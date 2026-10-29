@@ -4,7 +4,9 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import java.io.BufferedReader;
@@ -179,6 +181,15 @@ public final class SecureTlsClient {
             // smaller ClientHello that Russian/CIS DPI engines historically
             // pattern-match less aggressively than TLS 1.3 + ALPN h2.
             tls.setEnabledProtocols(new String[]{"TLSv1.2"});
+            // A raw SSLSocket only validates the certificate chain; it does
+            // NOT check that the certificate is issued for the host we asked
+            // for unless endpoint identification is switched on. Without it
+            // anyone on the path with a valid certificate for ANY name could
+            // impersonate Twitch or the DoH resolvers.
+            SSLParameters sp = tls.getSSLParameters();
+            sp.setEndpointIdentificationAlgorithm("HTTPS");
+            sp.setServerNames(List.of(new SNIHostName(sni)));
+            tls.setSSLParameters(sp);
             tls.startHandshake();
 
             StringBuilder req = new StringBuilder();

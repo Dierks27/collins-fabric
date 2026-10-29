@@ -9,9 +9,11 @@ pluginManagement {
 }
 
 plugins {
-    // Lets Gradle auto-provision the JDK 25 toolchain (and the JDK 25 daemon
-    // pinned in gradle/gradle-daemon-jvm.properties) from a foojay-backed
-    // download service when a matching JDK is not already installed locally.
+    // Lets Gradle auto-provision the JDK 25 COMPILE toolchain from a
+    // foojay-backed download service when a matching JDK is not installed.
+    // It does not cover the Gradle daemon itself (gradle/gradle-daemon-jvm
+    // .properties): that JVM is chosen before this script runs, so a JDK 25
+    // must already be installed (any vendor) or named by JAVA_HOME.
     id 'org.gradle.toolchains.foojay-resolver-convention' version '0.9.0'
 }
 
