@@ -1,0 +1,50 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # allows attaching the jar to a Release on tag pushes
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 26.x / Loom need Java 25 both to build and to run Gradle
+      # (gradle/gradle-daemon-jvm.properties pins the daemon to 25), and
+      # Gradle 9.8 runs on JDK 25, so one JDK is enough here.
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # Loom downloads the Minecraft client jar and assets on the first run;
+      # this step takes several minutes.
+      - name: Build mod jar
+        run: ./gradlew build --no-daemon --stacktrace
+
+      - name: Upload jar as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: collins-fabric-jar
+          path: build/libs/collins-fabric-*-mc*.jar
+          if-no-files-found: error
+
+      - name: Attach jar to the Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" build/libs/collins-fabric-*-mc*.jar \
+            --title "$GITHUB_REF_NAME" --generate-notes \
+          || gh release upload "$GITHUB_REF_NAME" build/libs/collins-fabric-*-mc*.jar --clobber
