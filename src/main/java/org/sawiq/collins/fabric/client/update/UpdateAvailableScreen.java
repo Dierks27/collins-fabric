@@ -5,7 +5,7 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
-import net.minecraft.util.Util;
+import com.mojang.blaze3d.Blaze3D;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -76,12 +76,14 @@ public final class UpdateAvailableScreen extends Screen {
         if (this.minecraft == null) {
             return;
         }
-        this.minecraft.setScreen(this.parent);
+        // 26.3: screens are set through Gui#setScreen.
+        this.minecraft.gui.setScreen(this.parent);
     }
 
     private static void openUrl(String url) {
         try {
-            Util.getPlatform().openUri(new URI(url));
+            // 26.3: Util.OS#openUri moved to Blaze3D#openUri.
+            Blaze3D.openUri(new URI(url));
         } catch (URISyntaxException ignored) {
             // Modrinth URLs are statically defined; misformed URIs would be a
             // programmer error rather than something the user can recover from.

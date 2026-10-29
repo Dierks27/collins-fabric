@@ -4,11 +4,11 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
-import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.rendertype.RenderTypes;
+import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.Brightness;
@@ -24,36 +24,32 @@ public final class VideoScreenRenderer {
     private VideoScreenRenderer() {}
 
     public static void init() {
-        // 26.1: Fabric replaced WorldRenderEvents.LAST with LevelRenderEvents.END_MAIN.
-        LevelRenderEvents.END_MAIN.register(VideoScreenRenderer::onLast);
+        // 26.3: the level renderer no longer hands out a MultiBufferSource
+        // during END_MAIN. World geometry is "submitted" to a
+        // SubmitNodeCollector while the frame is being collected and drawn by
+        // Mojang later in the frame, so we hook COLLECT_SUBMITS and hand our
+        // quads over as custom geometry.
+        LevelRenderEvents.COLLECT_SUBMITS.register(VideoScreenRenderer::onCollectSubmits);
     }
 
-    private static void onLast(LevelRenderContext ctx) {
+    private static void onCollectSubmits(LevelRenderContext ctx) {
         PoseStack matrices = ctx.poseStack();
-        if (matrices == null) return;
+        SubmitNodeCollector collector = ctx.submitNodeCollector();
+        if (matrices == null || collector == null) return;
 
         Minecraft client = Minecraft.getInstance();
-        // 26.1: LevelRenderContext no longer exposes Camera directly. Pull it
-        // from the GameRenderer; END_MAIN runs after the camera has been
-        // updated for this frame, so this is the same camera Mojang itself
-        // is using for this render pass.
-        Camera camera = client.gameRenderer.getMainCamera();
-        if (camera == null) return;
+        // 26.3: the per-frame camera lives in the level render state.
+        CameraRenderState cameraState = ctx.levelState() != null ? ctx.levelState().cameraRenderState : null;
+        Vec3 cam = cameraState != null && cameraState.pos != null
+                ? cameraState.pos
+                : ctx.gameRenderer().mainCamera().position();
 
-        MultiBufferSource.BufferSource consumers = client.renderBuffers().bufferSource();
-
-        Vec3 cam = camera.position();
+        if (!CollinsClientConfig.get().renderVideo) {
+            return;
+        }
 
         matrices.pushPose();
         matrices.translate(-cam.x, -cam.y, -cam.z);
-
-        PoseStack.Pose entry = matrices.last();
-
-        if (!CollinsClientConfig.get().renderVideo) {
-            matrices.popPose();
-            consumers.endBatch();
-            return;
-        }
 
         for (VideoScreen screen : VideoScreenManager.all()) {
             ScreenState st = screen.state();
@@ -66,22 +62,30 @@ public final class VideoScreenRenderer {
             // which players reasonably read as "the screen never goes
             // away even when nothing is playing".
             if (screen.hasTexture()) {
-                drawScreen(entry, consumers, cam, st, screen.textureId());
+                drawScreen(matrices, collector, cam, st, screen.textureId());
             }
         }
 
         matrices.popPose();
-        consumers.endBatch();
     }
 
-    private static void drawScreen(PoseStack.Pose entry,
-                                   MultiBufferSource consumers,
+    private static void drawScreen(PoseStack matrices,
+                                   SubmitNodeCollector collector,
                                    Vec3 cam,
                                    ScreenState s,
                                    Identifier textureId) {
 
         RenderType layer = RenderTypes.entityCutoutZOffset(textureId);
-        VertexConsumer vc = consumers.getBuffer(layer);        int minX = s.minX(), maxX = s.maxX();
+        // The collector copies the current pose at submit time and calls the
+        // renderer later in the frame with that pose and a buffer for `layer`.
+        collector.submitCustomGeometry(matrices, layer, (entry, vc) -> emitScreen(entry, vc, cam, s));
+    }
+
+    private static void emitScreen(PoseStack.Pose entry,
+                                   VertexConsumer vc,
+                                   Vec3 cam,
+                                   ScreenState s) {
+        int minX = s.minX(), maxX = s.maxX();
         int minY = s.minY(), maxY = s.maxY();
         int minZ = s.minZ(), maxZ = s.maxZ();
 
@@ -181,8 +185,7 @@ public final class VideoScreenRenderer {
         Vector3f p = new Vector3f((float) x, (float) y, (float) z);
         entry.pose().transformPosition(p);
 
-        Vector3f n = new Vector3f(nx, ny, nz);
-        entry.normal().transform(n);
+        Vector3f n = entry.transformNormal(nx, ny, nz, new Vector3f());
         n.normalize();
 
         int color = 0xFFFFFFFF;

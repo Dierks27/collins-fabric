@@ -5,6 +5,7 @@
   "config.collins.local_volume": "Локальная громкость",
   "config.collins.render_video": "Рендерить видео",
   "config.collins.actionbar_timeline": "Таймлайн в actionbar",
+  "config.collins.check_modrinth_updates": "Проверять обновления на Modrinth (после перезапуска)",
   "text.collins.youtube.quality": "  Качество: ",
   "text.collins.youtube.quality.current": "Локальное качество YouTube: %s",
   "text.collins.youtube.quality.set": "Локальное качество YouTube установлено: %s",

@@ -42,6 +42,11 @@ public final class CollinsModMenu implements ModMenuApi {
             .setSaveConsumer(v -> cfg.actionbarTimeline = v)
             .build());
 
+        general.addEntry(eb.startBooleanToggle(Component.translatable("config.collins.check_modrinth_updates"), cfg.checkModrinthUpdates)
+            .setDefaultValue(false)
+            .setSaveConsumer(v -> cfg.checkModrinthUpdates = v)
+            .build());
+
         return builder.build();
     }
 }

@@ -17,6 +17,8 @@ public final class CollinsClientConfig {
     public boolean renderVideo = true;
     public boolean actionbarTimeline = true;
     public int youtubeMaxQuality = YouTubeQuality.DEFAULT;
+    // Off by default: this fork is private and never published on Modrinth.
+    public boolean checkModrinthUpdates = false;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String FILE_NAME = "collins.json";

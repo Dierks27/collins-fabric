@@ -41,24 +41,30 @@ public final class CollinsFabricClient implements ClientModInitializer {
         // Show "newer version on Modrinth" notification once when the player
         // is sitting on the title screen. Async fetch on init, surfaces the
         // result the next tick the title screen is open.
-        ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            if (this.pendingUpdate != null
-                    && !this.updateScreenShown
-                    && client.screen instanceof TitleScreen titleScreen) {
-                this.updateScreenShown = true;
-                client.setScreen(new UpdateAvailableScreen(
-                        titleScreen,
-                        this.pendingUpdate.version(),
-                        this.pendingUpdate.url()));
-                this.pendingUpdate = null;
-            }
-        });
+        // Off by default in this fork: it is private and never published on
+        // Modrinth, so a probe could only ever nag about upstream's releases.
+        if (CollinsClientConfig.get().checkModrinthUpdates) {
+            ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                // 26.3: the current screen moved from Minecraft#screen to
+                // Gui#screen(), and setScreen to Gui#setScreen.
+                if (this.pendingUpdate != null
+                        && !this.updateScreenShown
+                        && client.gui.screen() instanceof TitleScreen titleScreen) {
+                    this.updateScreenShown = true;
+                    client.gui.setScreen(new UpdateAvailableScreen(
+                            titleScreen,
+                            this.pendingUpdate.version(),
+                            this.pendingUpdate.url()));
+                    this.pendingUpdate = null;
+                }
+            });
 
-        this.versionChecker.checkAsync().thenAccept(result -> {
-            if (result != null && Minecraft.getInstance() != null) {
-                Minecraft.getInstance().execute(() -> this.pendingUpdate = result);
-            }
-        });
+            this.versionChecker.checkAsync().thenAccept(result -> {
+                if (result != null && Minecraft.getInstance() != null) {
+                    Minecraft.getInstance().execute(() -> this.pendingUpdate = result);
+                }
+            });
+        }
 
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             VideoScreenManager.stopAll();

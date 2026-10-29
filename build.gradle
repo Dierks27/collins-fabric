@@ -2,7 +2,8 @@ plugins {
     // 26.1 introduced "Unobfuscated Loom" (no remapping). The plugin id is
     // intentionally different from the legacy fabric-loom: see
     // https://fabricmc.net/2026/03/14/261.html
-    id "net.fabricmc.fabric-loom" version "1.15.5"
+    // 1.19.x is the newest Loom release at the time of the 26.3 port.
+    id "net.fabricmc.fabric-loom" version "1.19.3"
     id "maven-publish"
 }
 
@@ -19,7 +20,7 @@ base {
 }
 
 dependencies {
-    // No more `mappings` block — Loom 1.15+ for 26.1 ships unobfuscated Minecraft.
+    // No more `mappings` block — Loom 1.15+ for 26.1+ ships unobfuscated Minecraft.
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
@@ -59,7 +60,7 @@ processResources {
 }
 
 java {
-    // 26.1 requires Java 25 minimum, both at runtime and for the Gradle JVM.
+    // 26.1+ requires Java 25 minimum, both at runtime and for the Gradle JVM.
     toolchain.languageVersion = JavaLanguageVersion.of(25)
     withSourcesJar()
 }

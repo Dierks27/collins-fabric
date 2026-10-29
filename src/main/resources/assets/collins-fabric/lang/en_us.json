@@ -5,6 +5,7 @@
   "config.collins.local_volume": "Local volume",
   "config.collins.render_video": "Render video",
   "config.collins.actionbar_timeline": "Actionbar timeline",
+  "config.collins.check_modrinth_updates": "Check Modrinth for updates (takes effect after restart)",
   "text.collins.youtube.quality": "  Quality: ",
   "text.collins.youtube.quality.current": "Local YouTube quality: %s",
   "text.collins.youtube.quality.set": "Local YouTube quality set to: %s",

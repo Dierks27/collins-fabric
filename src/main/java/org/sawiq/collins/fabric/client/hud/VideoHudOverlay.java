@@ -59,7 +59,8 @@ public final class VideoHudOverlay {
         // Hide the overlay while the chat is open so it does not clash
         // with the chat input. The previous 1.21.x impl used the same
         // gate against ChatScreen.
-        if (client.screen instanceof ChatScreen) return;
+        // 26.3: the current screen moved from Minecraft#screen to Gui#screen().
+        if (client.gui.screen() instanceof ChatScreen) return;
 
         // Avoid drawing the timeline twice. VideoScreenManager already
         // pushes timeline / download progress to the actionbar via

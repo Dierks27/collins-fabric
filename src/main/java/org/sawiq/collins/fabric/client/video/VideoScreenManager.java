@@ -334,7 +334,7 @@ public final class VideoScreenManager {
         }
 
         CollinsClientConfig cfg = CollinsClientConfig.get();
-        if (cfg.renderVideo && cfg.actionbarTimeline && !(client.screen instanceof ChatScreen)) {
+        if (cfg.renderVideo && cfg.actionbarTimeline && !(client.gui.screen() instanceof ChatScreen)) {
             long now = System.currentTimeMillis();
             if (now - lastActionbarUpdateMs >= 500L) {
                 lastActionbarUpdateMs = now;
