@@ -28,9 +28,11 @@ on a `v*` tag.
 
 ## Install (each player's PC)
 
-Minecraft 26.3 with Fabric Loader 0.20.1 or newer, then in `mods/`:
-Fabric API (0.165.0+26.3 or newer), Cloth Config (26.3.x), ModMenu (21.x) and
-this jar. On first use the mod downloads `yt-dlp` and `ffmpeg` into the game
+Minecraft 26.3 with Fabric Loader 0.18.4 or newer, then in `mods/`:
+Fabric API (0.165.0+26.3 or newer) and this jar. Cloth Config is bundled
+inside the jar. ModMenu (21.x) is optional: with it, the settings screen
+appears under Mods > Collins; without it everything else works the same.
+On first use the mod downloads `yt-dlp` and `ffmpeg` into the game
 folder and caches videos under `collins-cache/`.
 
 Client commands: `/collinsc time`, `/collinsc quality <value>`,
@@ -38,7 +40,8 @@ Client commands: `/collinsc time`, `/collinsc quality <value>`,
 
 ## Differences from upstream
 
-- Ported to Minecraft 26.3 (Fabric Loader 0.20.1, Fabric API 0.165.0+26.3,
-  Cloth Config 26.3.159, ModMenu 21.0.0, Loom 1.19).
+- Ported to Minecraft 26.3 (built against Fabric Loader 0.20.1, runs on
+  0.18.4+; Fabric API 0.165.0+26.3, Cloth Config 26.3.159 bundled, ModMenu
+  21.0.0 optional, Loom 1.19).
 - The Modrinth update checker is off by default (`checkModrinthUpdates` in
   `config/collins.json`); this fork is private and never published there.
