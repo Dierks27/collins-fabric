@@ -765,6 +765,16 @@ public final class VideoPlayer {
     public void start(String url, int blocksW, int blocksH, boolean loop, long startPosMs, float gain, int preferredYoutubeHeight) {
         stop(); // Р С›РЎРѓРЎвЂљР В°Р Р…Р С•Р Р†Р С”Р В° РЎРѓРЎвЂљР В°РЎР‚Р С•Р С–Р С• Р С—Р С•РЎвЂљР С•Р С”Р В°
 
+        // Backstop for "Only play YouTube and Twitch". VideoScreenManager
+        // already turns a refused address into "no address" when the sync
+        // arrives (and tells the player); this guards every other way into
+        // the player, so a refused address never reaches the resolver,
+        // yt-dlp, the downloader or FFmpeg.
+        if (!org.sawiq.collins.fabric.client.config.CollinsClientConfig.mayLoad(url)) {
+            dbg("start: address refused by the allowed-sites setting");
+            return;
+        }
+
         this.startPosMs = Math.max(0L, startPosMs);
         this.gain = Math.max(0f, gain);
         this.startRequestEpochMs = System.currentTimeMillis();
