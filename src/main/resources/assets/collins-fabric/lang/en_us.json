@@ -8,7 +8,7 @@
   "config.collins.check_modrinth_updates": "Check Modrinth for updates (takes effect after restart)",
   "config.collins.category.safety": "Safety & storage",
   "config.collins.only_allowed_sites": "Only play YouTube and Twitch",
-  "config.collins.only_allowed_sites.tooltip": "On: the mod never contacts any site outside the list below, whatever the server sends. Screens a server admin approved for another site (a direct .mp4 link, RuTube, VK...) stay blank for you. Turn this off to watch those.",
+  "config.collins.only_allowed_sites.tooltip": "Off by default. On: the mod never contacts any site outside the list below, whatever the server sends. Screens a server admin approved for another site (a direct .mp4 link, RuTube, VK...) stay blank for you. Turn this off to watch those.",
   "config.collins.allowed_hosts": "Allowed sites",
   "config.collins.allowed_hosts.tooltip": "Sites videos may load from. Each entry also allows its subdomains (youtube.com allows m.youtube.com). Only used while \"Only play YouTube and Twitch\" is on. Type the site name only, such as vk.com; a full address is cut down to its site name when saved.",
   "config.collins.cache_limit_gb": "Video cache limit",

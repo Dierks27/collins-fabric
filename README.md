@@ -39,12 +39,13 @@ Client commands: `/collinsc time`, `/collinsc quality <value>`,
 `/collinsc sites [on|off]`, `/collins-cache info|open|delete|clear|limit [GB]`,
 `/collins-yt info|install|update`.
 
-## Only play YouTube and Twitch (on by default)
+## Only play YouTube and Twitch (optional, off by default)
 
 The player's own game downloads a screen's video, straight from the site in
 the address, when they come near a playing screen. So the mod has a safety
-setting, **Only play YouTube and Twitch**, which is **on by default**: the mod
-then refuses to load a video from any site that is not on its allowed list,
+setting, **Only play YouTube and Twitch**. It is **off by default**, so every
+video a server sends plays as before. A player who turns it on is protected on
+every server they join: the mod then refuses to load a video from any site that is not on its allowed list,
 whatever the server sends. A refused screen stays blank; nothing is fetched,
 resolved or downloaded for it, and the player gets one chat line per screen
 and address:
@@ -68,17 +69,18 @@ and address:
   `/collinsc sites on|off`, or with `onlyAllowedSites` in
   `config/collins.json`. It takes effect immediately.
 
-**Admin-approved videos.** On a server running collins-paper 1.7.0 or newer,
-an admin can approve an address from another site (a direct `.mp4`, RuTube,
-VK, ...) and the server then sends it to everyone. Players who keep this
-setting on will **not** see those screens: that is the trade-off of a
-client-side safety switch. To watch them, turn the setting off (or add that
-site to the allowed list).
+**Admin videos.** On a server running collins-paper 1.7.0 or newer, regular
+players can only put allowed sites on a screen, while admins (permission
+`collins.url.any`) can put any address there and the server sends it to
+everyone. With this setting at its default (off), every player sees those
+screens. A player who turns it on will **not** see admin videos from other
+sites: that is the trade-off of a client-side safety switch. To watch them,
+turn it off again or add that site to the allowed list.
 
 ## Video cache limit
 
 Downloaded videos are kept under `collins-cache/` (all sites together) up to a
-limit, **4 GB by default** (1 to 64 GB). When a new download would go over it,
+limit, **16 GB by default**; each player can pick 1 to 256 GB. When a new download would go over it,
 the oldest videos are deleted first; a single video bigger than the limit is
 not downloaded (the player is told so once, with how to raise the limit).
 Change it in Mods > Collins > Safety & storage, with
@@ -92,7 +94,7 @@ downloads at all.
 - Ported to Minecraft 26.3 (built against Fabric Loader 0.20.1, runs on
   0.18.4+; Fabric API 0.165.0+26.3, Cloth Config 26.3.159 bundled, ModMenu
   21.0.0 optional, Loom 1.19).
-- "Only play YouTube and Twitch" safety setting, on by default, and a
+- Optional "Only play YouTube and Twitch" safety setting (off by default) and a
   configurable video cache limit (see above).
 - The Modrinth update checker is off by default (`checkModrinthUpdates` in
   `config/collins.json`); this fork is private and never published there.

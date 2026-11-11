@@ -60,7 +60,7 @@ public final class CollinsModMenu implements ModMenuApi {
         ConfigCategory safety = builder.getOrCreateCategory(Component.translatable("config.collins.category.safety"));
 
         safety.addEntry(eb.startBooleanToggle(Component.translatable("config.collins.only_allowed_sites"), cfg.onlyAllowedSites)
-            .setDefaultValue(true)
+            .setDefaultValue(false)
             .setTooltip(Component.translatable("config.collins.only_allowed_sites.tooltip"))
             .setSaveConsumer(v -> cfg.onlyAllowedSites = v)
             .build());

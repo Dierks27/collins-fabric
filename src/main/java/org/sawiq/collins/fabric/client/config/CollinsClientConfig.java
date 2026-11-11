@@ -24,12 +24,12 @@ public final class CollinsClientConfig {
     public boolean checkModrinthUpdates = false;
 
     /**
-     * "Only play YouTube and Twitch". On by default: the mod refuses to load
-     * a video from any host not in {@link #allowedHosts}, whatever the server
-     * sends. Screens a server admin approved for another host (a direct
-     * .mp4, for example) stay blank for players who leave this on.
+     * "Only play YouTube and Twitch". Off by default, so videos an admin put
+     * on a screen (any site) play for everyone. When a player turns it on,
+     * the mod refuses to load a video from any host not in
+     * {@link #allowedHosts}, whatever the server sends.
      */
-    public boolean onlyAllowedSites = true;
+    public boolean onlyAllowedSites = false;
     /** Hosts (and their subdomains) that may be loaded while {@link #onlyAllowedSites} is on. */
     public List<String> allowedHosts = new ArrayList<>(UrlPolicy.DEFAULT_HOSTS);
 
@@ -41,9 +41,9 @@ public final class CollinsClientConfig {
      */
     public int cacheLimitGb = DEFAULT_CACHE_LIMIT_GB;
 
-    public static final int DEFAULT_CACHE_LIMIT_GB = 4;
+    public static final int DEFAULT_CACHE_LIMIT_GB = 16;
     public static final int MIN_CACHE_LIMIT_GB = 1;
-    public static final int MAX_CACHE_LIMIT_GB = 64;
+    public static final int MAX_CACHE_LIMIT_GB = 256;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String FILE_NAME = "collins.json";
