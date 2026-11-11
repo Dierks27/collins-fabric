@@ -49,6 +49,15 @@ dependencies {
 
     implementation(include("maven.modrinth:cloth-config:${project.cloth_config_version}"))
     implementation("maven.modrinth:modmenu:${project.modmenu_version}")
+
+    // Unit tests for the plain-Java parts (address policy, cache limit).
+    testImplementation(platform("org.junit:junit-bom:5.13.4"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.named("test", Test) {
+    useJUnitPlatform()
 }
 
 processResources {
