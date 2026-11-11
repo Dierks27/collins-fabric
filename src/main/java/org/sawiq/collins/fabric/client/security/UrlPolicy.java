@@ -92,12 +92,33 @@ public final class UrlPolicy {
         return h.isEmpty() ? null : h;
     }
 
-    /** Normalised, de-duplicated copy of a host list, dropping empty entries. */
+    /**
+     * A list entry the player typed, as the bare host name the matcher
+     * needs, or null when it cannot be one. An address ("https://vk.com/",
+     * "vk.com/video") becomes its host, and a leading "*." or "." is dropped
+     * (an entry always allows its subdomains). Only cleans up the list: the
+     * matching rules in {@link #hostAllowed} stay the server's.
+     */
+    public static String hostEntry(String entry) {
+        String h = normalizeHost(entry);
+        if (h == null || h.indexOf('@') >= 0) return null;
+        if (h.startsWith("*.")) h = h.substring(2);
+        while (h.startsWith(".")) h = h.substring(1);
+        if (!h.contains("://")) h = "https://" + h;
+        h = hostOf(h);
+        if (h == null || !h.matches("[a-z0-9._-]+")) return null;
+        return h;
+    }
+
+    /**
+     * Cleaned, de-duplicated copy of a host list, dropping entries that are
+     * empty or cannot be read as a host name (see {@link #hostEntry}).
+     */
     public static List<String> normalizeHosts(Collection<String> hosts) {
         List<String> out = new ArrayList<>();
         if (hosts == null) return out;
         for (String h : hosts) {
-            String n = normalizeHost(h);
+            String n = hostEntry(h);
             if (n != null && !out.contains(n)) out.add(n);
         }
         return out;

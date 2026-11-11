@@ -54,6 +54,41 @@ public final class YouTubeResolver {
     private static final java.util.Map<Process, Runnable> ACTIVE_DOWNLOAD_CLEANUPS = new ConcurrentHashMap<>();
 
     /**
+     * File-name prefixes ({@code <id>.<height>p}) of the yt-dlp downloads
+     * running now, with how many downloads use each. The cache limit never
+     * deletes a file whose name starts with one of these, so it cannot
+     * remove a finished format file yt-dlp is about to merge.
+     */
+    private static final ConcurrentHashMap<String, Integer> ACTIVE_DOWNLOAD_PREFIXES = new ConcurrentHashMap<>();
+
+    /**
+     * Videos refused as larger than the cache limit, keyed by
+     * {@code id@height}, with the limit at that time. A looping screen then
+     * fails at once instead of downloading the same video again and again;
+     * raising the limit lets it try again.
+     */
+    private static final int TOO_LARGE_MAX = 64;
+    @SuppressWarnings("serial")
+    private static final java.util.Map<String, Long> TOO_LARGE =
+        java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<String, Long>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, Long> eldest) {
+                    return size() > TOO_LARGE_MAX;
+                }
+            });
+
+    /** True when {@code file} belongs to a yt-dlp download that is still running. */
+    static boolean isActiveDownloadFile(Path file) {
+        if (file == null || file.getFileName() == null) return false;
+        String name = file.getFileName().toString();
+        for (String prefix : ACTIVE_DOWNLOAD_PREFIXES.keySet()) {
+            if (name.startsWith(prefix + ".")) return true;
+        }
+        return false;
+    }
+
+    /**
      * Forcibly terminates every yt-dlp / ffmpeg subprocess that is
      * currently downloading or probing a stream and removes the partial
      * artifacts each killed download left behind. Idempotent and safe to
@@ -106,7 +141,7 @@ public final class YouTubeResolver {
     }
 
     private static final Pattern YOUTUBE_PATTERN = Pattern.compile(
-        "(?:https?://)?(?:www\\.|m\\.)?(?:youtube\\.com/watch\\?v=|youtu\\.be/|youtube\\.com/embed/|youtube\\.com/v/|youtube\\.com/shorts/|youtube\\.com/live/)([a-zA-Z0-9_-]{11})"
+        "(?:https?://)?(?:www\\.|m\\.)?(?:youtube\\.com/watch\\?v=|youtu\\.be/|youtube\\.com/embed/|youtube-nocookie\\.com/embed/|youtube\\.com/v/|youtube\\.com/shorts/|youtube\\.com/live/)([a-zA-Z0-9_-]{11})"
     );
     private static final Pattern TWITCH_CHANNEL_PATTERN = Pattern.compile(
         "(?:https?://)?(?:www\\.)?twitch\\.tv/(?!directory|downloads|jobs|p/|settings|inventory|wallet)([a-zA-Z0-9_]+)(?:[/?#].*)?"
@@ -290,7 +325,7 @@ public final class YouTubeResolver {
     public static boolean isYouTubeUrl(String url) {
         if (url == null || url.isBlank()) return false;
         String u = url.toLowerCase(Locale.ROOT);
-        return u.contains("youtube.com") || u.contains("youtu.be");
+        return u.contains("youtube.com") || u.contains("youtu.be") || u.contains("youtube-nocookie.com");
     }
 
     public static boolean isTwitchUrl(String url) {
@@ -922,6 +957,69 @@ public final class YouTubeResolver {
                                                     int preferredHeight,
                                                     VideoPlayer.FrameSink sink) throws Exception {
         int targetHeight = normalizeTargetHeight(preferredHeight);
+        long limitBytes = VideoPlayer.cacheLimitBytes();
+        Long refusedAtLimit = TOO_LARGE.get(cacheKey(sourceId, targetHeight));
+        if (refusedAtLimit != null && limitBytes <= refusedAtLimit) {
+            return tooLargeResult(sourceId, limitBytes);
+        }
+        String cachePrefix = buildCachePrefix(sourceId, targetHeight);
+        ACTIVE_DOWNLOAD_PREFIXES.merge(cachePrefix, 1, Integer::sum);
+        try {
+            return downloadVodToCacheImpl(platform, sourceUrl, sourceId, targetHeight, limitBytes, sink);
+        } finally {
+            ACTIVE_DOWNLOAD_PREFIXES.computeIfPresent(cachePrefix, (k, n) -> n > 1 ? n - 1 : null);
+        }
+    }
+
+    private static final String TOO_LARGE_ERROR = "Video is larger than the video cache limit";
+
+    private static YouTubeResult tooLargeResult(String sourceId, long limitBytes) {
+        long gb = limitBytes / (1024L * 1024L * 1024L);
+        return new YouTubeResult(null, sourceId, 0,
+                TOO_LARGE_ERROR + " (" + gb + " GB)", false, false);
+    }
+
+    /** True when the video was refused because it is bigger than the cache limit. */
+    public static boolean isTooLarge(YouTubeResult result) {
+        return result != null && result.error() != null && result.error().startsWith(TOO_LARGE_ERROR);
+    }
+
+    /** Stops yt-dlp and any ffmpeg it started. */
+    private static void killDownload(Process p) {
+        try {
+            p.descendants().forEach(ProcessHandle::destroyForcibly);
+        } catch (Exception ignored) {
+        }
+        try {
+            p.destroyForcibly();
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Deletes every file of one download ({@code <prefix>.*}), finished or not. */
+    private static void deleteDownloadFiles(Path cacheDir, String cachePrefix) {
+        try {
+            if (cacheDir == null || !Files.isDirectory(cacheDir)) return;
+            try (var stream = Files.list(cacheDir)) {
+                stream.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().startsWith(cachePrefix + "."))
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (Exception ignored) {
+                        }
+                    });
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static YouTubeResult downloadVodToCacheImpl(Platform platform,
+                                                        String sourceUrl,
+                                                        String sourceId,
+                                                        int targetHeight,
+                                                        long limitBytes,
+                                                        VideoPlayer.FrameSink sink) throws Exception {
         Path cacheDir = getPlatformCacheDir(platform);
         Files.createDirectories(cacheDir);
         String cachePrefix = buildCachePrefix(sourceId, targetHeight);
@@ -955,6 +1053,16 @@ public final class YouTubeResolver {
         command.add("15");
         command.add("--extractor-retries");
         command.add("2");
+        // Refuse a video larger than the player's cache limit. yt-dlp
+        // checks this only when it knows the size up front; a watchdog
+        // below also stops the download once the files on disk pass the
+        // limit (HLS / DASH downloads often have no size).
+        command.add("--max-filesize");
+        command.add(Long.toString(limitBytes));
+        // --print (below) turns on quiet mode, which would hide the
+        // progress lines and the "larger than max-filesize" message.
+        command.add("--no-quiet");
+        command.add("--progress");
         command.add("--newline");
         // Six progress fields: percent, downloaded_bytes, total_bytes,
         // total_bytes_estimate, fragment_index, fragment_count. The last
@@ -1007,8 +1115,32 @@ public final class YouTubeResolver {
         // milliseconds after starting it) still finds the hook.
         ACTIVE_DOWNLOAD_CLEANUPS.put(p, () -> deleteTempArtifacts(cacheDir, cachePrefix));
         StringBuilder output = new StringBuilder();
+        StringBuilder errorLines = new StringBuilder();
         String finalPath = null;
         long durationMs = 0L;
+        AtomicBoolean tooLargeFlag = new AtomicBoolean(false);
+        // Stops the download once its files on disk pass the limit. Runs
+        // on its own thread so it does not depend on yt-dlp's output. The
+        // merge step's .temp file is not counted: merging briefly needs
+        // room for the video twice, and the merged file is checked below.
+        Thread sizeWatchdog = new Thread(() -> {
+            while (p.isAlive() && !tooLargeFlag.get()) {
+                long onDisk = measureDownloadBytes(cacheDir, cachePrefix, true);
+                if (onDisk > limitBytes) {
+                    dbg("downloadVodToCache: " + onDisk + " bytes on disk, over the cache limit " + limitBytes);
+                    tooLargeFlag.set(true);
+                    killDownload(p);
+                    return;
+                }
+                try {
+                    Thread.sleep(1000L);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }, "Collins-YTSizeLimit-" + cachePrefix);
+        sizeWatchdog.setDaemon(true);
+        sizeWatchdog.start();
         AtomicLong totalEstimateBytes = new AtomicLong(Math.max(0L, estimatedTotalBytes));
         AtomicBoolean monitorRunning = new AtomicBoolean(sink != null);
         Thread progressMonitor = null;
@@ -1022,10 +1154,26 @@ public final class YouTubeResolver {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                output.append(line).append('\n');
                 String trimmed = line.trim();
+                // Progress lines are many and only parsed here; keep them
+                // out of the text kept for an error message.
+                if (!trimmed.contains("CollinsYTProgress:")) {
+                    output.append(line).append('\n');
+                }
+                if (trimmed.startsWith("ERROR")) {
+                    errorLines.append(trimmed).append('\n');
+                }
                 if (trimmed.startsWith("before_dl:CollinsYTMeta:")) {
                     updatePrintedDownloadSize(trimmed, totalEstimateBytes);
+                    long announced = totalEstimateBytes.get();
+                    if (announced > limitBytes) {
+                        dbg("downloadVodToCache: announced size " + announced + " is over the cache limit " + limitBytes);
+                        tooLargeFlag.set(true);
+                        killDownload(p);
+                    } else if (announced > 0) {
+                        // Make room for the new video before it is written.
+                        VideoPlayer.enforceCacheLimit(null, limitBytes - announced);
+                    }
                     // Surface the total size to the HUD the moment yt-dlp
                     // announces it (pre-transfer), so the progress line
                     // flips from "preparing..." to "X: 0% (0 MB / Y MB)"
@@ -1042,6 +1190,10 @@ public final class YouTubeResolver {
                 }
                 if (sink != null) {
                     updateDownloadProgressFromYtdlp(trimmed, sink, totalEstimateBytes);
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).contains("max-filesize")) {
+                    // "File is larger than max-filesize ... Aborting."
+                    tooLargeFlag.set(true);
                 }
                 if (trimmed.startsWith("after_move:")) {
                     finalPath = trimmed.substring("after_move:".length()).trim();
@@ -1065,6 +1217,7 @@ public final class YouTubeResolver {
             ACTIVE_DOWNLOAD_CLEANUPS.remove(p);
         }
         monitorRunning.set(false);
+        sizeWatchdog.interrupt();
         if (progressMonitor != null) {
             progressMonitor.interrupt();
             try {
@@ -1073,13 +1226,20 @@ public final class YouTubeResolver {
                 Thread.currentThread().interrupt();
             }
         }
+        boolean tooLarge = tooLargeFlag.get();
+        if (tooLarge) {
+            if (!finished) killDownload(p);
+            deleteDownloadFiles(cacheDir, cachePrefix);
+            TOO_LARGE.put(cacheKey(sourceId, targetHeight), limitBytes);
+            return tooLargeResult(sourceId, limitBytes);
+        }
         if (!finished) {
             p.destroyForcibly();
             return new YouTubeResult(null, sourceId, 0, "yt-dlp timeout while downloading video", false, false);
         }
 
         if (p.exitValue() != 0) {
-            String err = output.toString().trim();
+            String err = (errorLines.length() > 0 ? errorLines : output).toString().trim();
             if (err.length() > 300) err = err.substring(0, 300) + "...";
             return new YouTubeResult(null, sourceId, 0, "yt-dlp download error: " + err, false, false);
         }
@@ -1097,8 +1257,22 @@ public final class YouTubeResolver {
         if (finalFile == null) {
             return new YouTubeResult(null, sourceId, 0, "Downloaded file not found", false, false);
         }
+        long finalSize = 0L;
+        try {
+            finalSize = Files.size(finalFile);
+        } catch (Exception ignored) {
+        }
+        if (finalSize > limitBytes) {
+            // Merged video and audio came out over the limit.
+            dbg("downloadVodToCache: final file " + finalSize + " bytes is over the cache limit " + limitBytes);
+            deleteDownloadFiles(cacheDir, cachePrefix);
+            TOO_LARGE.put(cacheKey(sourceId, targetHeight), limitBytes);
+            return tooLargeResult(sourceId, limitBytes);
+        }
 
         writeCachedDuration(cacheDir, sourceId, durationMs);
+        // Keep the whole cache under the limit, never deleting this video.
+        VideoPlayer.enforceCacheLimit(finalFile, limitBytes);
         URL_CACHE.put(cacheKey(sourceId, targetHeight), new ResolvedUrl(finalFile.toString(), sourceId, System.currentTimeMillis(), durationMs));
         notifyCachedFileUsed(finalFile, sink);
         dbg("downloadVodToCache: platform=" + platform + " cached file=" + finalFile);
@@ -1106,6 +1280,13 @@ public final class YouTubeResolver {
     }
 
     private static void notifyCachedFileUsed(Path file, VideoPlayer.FrameSink sink) {
+        if (file != null) {
+            // Mark as recently used: the cache limit deletes the oldest first.
+            try {
+                Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+            } catch (Exception ignored) {
+            }
+        }
         if (sink == null || file == null) return;
         try {
             sink.onCachedFileUsed(file.toString(), Files.size(file));
@@ -1786,6 +1967,11 @@ public final class YouTubeResolver {
     }
 
     private static long measureDownloadBytes(Path cacheDir, String cachePrefix) {
+        return measureDownloadBytes(cacheDir, cachePrefix, false);
+    }
+
+    /** @param skipMergeTemp leave out the {@code .temp.} file yt-dlp writes while merging */
+    private static long measureDownloadBytes(Path cacheDir, String cachePrefix, boolean skipMergeTemp) {
         long total = 0L;
         try {
             if (cacheDir == null || !Files.isDirectory(cacheDir)) return 0L;
@@ -1793,6 +1979,7 @@ public final class YouTubeResolver {
                 total = stream
                     .filter(Files::isRegularFile)
                     .filter(path -> path.getFileName().toString().startsWith(cachePrefix + "."))
+                    .filter(path -> !skipMergeTemp || !path.getFileName().toString().contains(".temp."))
                     .filter(path -> !path.getFileName().toString().endsWith(".txt"))
                     .filter(path -> !path.getFileName().toString().endsWith(".json"))
                     .filter(path -> !path.getFileName().toString().endsWith(".description"))
@@ -1960,8 +2147,18 @@ public final class YouTubeResolver {
         }
     }
 
+    /** Every platform's download folder ({@code collins-cache/youtube}, {@code /twitch}, {@code /rutube}, {@code /vk}). */
+    public static List<Path> getPlatformCacheDirs() {
+        List<Path> dirs = new ArrayList<>();
+        for (Platform platform : Platform.values()) {
+            dirs.add(getPlatformCacheDir(platform));
+        }
+        return dirs;
+    }
+
     public static void clearCache() {
         URL_CACHE.clear();
+        TOO_LARGE.clear();
     }
 
     private static boolean isLiveJson(String json) {

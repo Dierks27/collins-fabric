@@ -11,6 +11,7 @@ import org.sawiq.collins.fabric.client.hud.VideoHudOverlay;
 import org.sawiq.collins.fabric.client.net.CollinsNet;
 import org.sawiq.collins.fabric.client.update.ModrinthVersionChecker;
 import org.sawiq.collins.fabric.client.update.UpdateAvailableScreen;
+import org.sawiq.collins.fabric.client.video.VideoPlayer;
 import org.sawiq.collins.fabric.client.video.VideoScreenManager;
 import org.sawiq.collins.fabric.client.video.VideoScreenRenderer;
 import org.sawiq.collins.fabric.client.video.YouTubeResolver;
@@ -35,6 +36,10 @@ public final class CollinsFabricClient implements ClientModInitializer {
             YouTubeResolver.downloadYtdlpAsync();
         }
         YouTubeResolver.downloadFfmpegAsync();
+        // Trim the video cache to the player's limit (it may have been lowered).
+        // Called from a background thread so loading VideoPlayer (and its
+        // FFmpeg natives) does not hold up the game's start.
+        Thread.ofPlatform().daemon().name("Collins-CacheTrim-Start").start(VideoPlayer::enforceCacheLimitAsync);
 
         ClientTickEvents.END_CLIENT_TICK.register(VideoScreenManager::tick);
 

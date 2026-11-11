@@ -123,6 +123,19 @@ class UrlPolicyTest {
     }
 
     @Test
+    void typedAddressesAndWildcardsBecomeBareHosts() {
+        assertEquals(List.of("vk.com", "rutube.ru", "example.com"),
+                UrlPolicy.normalizeHosts(List.of("https://vk.com/", "vk.com/", "*.vk.com", "VK.com:443",
+                        "http://RuTube.ru/video/x", ".example.com")));
+        assertNull(UrlPolicy.hostEntry("youtube.com@evil.example"));
+        assertNull(UrlPolicy.hostEntry("ftp://vk.com/"));
+        assertNull(UrlPolicy.hostEntry("vk .com"));
+        assertNull(UrlPolicy.hostEntry("*"));
+        assertTrue(UrlPolicy.hostAllowed("https://vk.com/video1_2",
+                UrlPolicy.normalizeHosts(List.of("https://vk.com/"))));
+    }
+
+    @Test
     void hostOfAndDisplayHost() {
         assertEquals("evil.example", UrlPolicy.hostOf("https://youtube.com@evil.example/"));
         assertEquals("www.youtube.com", UrlPolicy.hostOf("https://WWW.YouTube.com.:443/x"));

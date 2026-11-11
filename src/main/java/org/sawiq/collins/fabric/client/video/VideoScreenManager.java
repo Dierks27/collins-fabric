@@ -9,11 +9,13 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.world.phys.Vec3;
 import org.sawiq.collins.fabric.client.config.CollinsClientConfig;
 import org.sawiq.collins.fabric.client.net.CollinsNet;
+import org.sawiq.collins.fabric.client.security.UrlPolicy;
 import org.sawiq.collins.fabric.client.state.ScreenState;
 import org.sawiq.collins.fabric.client.util.TimeFormatUtil;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
@@ -29,6 +31,14 @@ public final class VideoScreenManager {
     private static final Map<String, VideoScreen> SCREENS = new ConcurrentHashMap<>();
     private static final Set<String> SHOWN_DELETE_PROMPT = ConcurrentHashMap.newKeySet();
     private static volatile String pendingDeletePath = null;
+
+    // Screens whose address "Only play YouTube and Twitch" refused, by screen
+    // key, holding the state exactly as the server sent it. The VideoScreen
+    // itself only ever sees an empty, stopped copy (see gate()).
+    private static final Map<String, ScreenState> BLOCKED = new ConcurrentHashMap<>();
+    // Screen key -> refused address the player has already been told about,
+    // so the notice is shown once per screen and address, not once per sync.
+    private static final Map<String, String> BLOCKED_NOTIFIED = new ConcurrentHashMap<>();
 
     private static final int GREEN = 0x00FF00;
     private static final int GRAY = 0xAAAAAA;
@@ -189,12 +199,14 @@ public final class VideoScreenManager {
                         SHOWN_DELETE_PROMPT.removeIf(k -> k.startsWith(namePrefix));
                     }
                 }
+                BLOCKED.remove(key);
+                BLOCKED_NOTIFIED.remove(key);
             }
         }
 
         for (var e : incoming.entrySet()) {
             String key = e.getKey();
-            ScreenState st = e.getValue();
+            ScreenState st = gate(key, e.getValue());
 
             VideoScreen vs = SCREENS.get(key);
             if (vs == null) {
@@ -212,6 +224,110 @@ public final class VideoScreenManager {
                 vs.stop();
             }
         }
+    }
+
+    /**
+     * Re-runs the last sync from the server through the site check, so a
+     * change to "Only play YouTube and Twitch" or the host list takes effect
+     * at once instead of at the next sync. Call on the client thread.
+     */
+    public static void reapplySync() {
+        Minecraft client = Minecraft.getInstance();
+        if (client == null || client.player == null || client.level == null) return;
+        // Empty after a disconnect/server switch: CollinsNet.SCREENS may still
+        // hold the previous server's screens, which must not come back.
+        if (SCREENS.isEmpty()) return;
+        applySync(new HashMap<>(CollinsNet.SCREENS));
+    }
+
+    /**
+     * The state a VideoScreen gets. An address the player's settings refuse
+     * is replaced by an empty, stopped one - exactly what a 1.7.0+ server
+     * sends for an address it will not play - so nothing is resolved,
+     * downloaded or shown. The server's state is kept in BLOCKED for the
+     * notice; the incoming map itself is never changed.
+     */
+    private static ScreenState gate(String key, ScreenState st) {
+        if (st == null || st.url() == null || st.url().isBlank() || CollinsClientConfig.mayLoad(st.url())) {
+            BLOCKED.remove(key);
+            return st;
+        }
+        BLOCKED.put(key, st);
+        return new ScreenState(
+                st.name(), st.world(),
+                st.x1(), st.y1(), st.z1(),
+                st.x2(), st.y2(), st.z2(),
+                st.axis(),
+                "",
+                false,
+                st.loop(),
+                st.volume(),
+                st.youtubeQuality(),
+                st.startEpochMs(),
+                st.basePosMs()
+        );
+    }
+
+    // Tells the player, once per screen and address, that a screen near them
+    // would have started a video from a host their settings refuse. Only when
+    // the mod would otherwise have started downloading: the server says the
+    // screen is playing, it is in this world and within the hear radius.
+    private static void notifyBlocked(Minecraft client, Player player, Vec3 pos, int radius) {
+        if (BLOCKED.isEmpty()) return;
+        if (!CollinsClientConfig.get().renderVideo) return;
+        for (var e : BLOCKED.entrySet()) {
+            ScreenState st = e.getValue();
+            if (!st.playing()) continue;
+            if (st.url().equals(BLOCKED_NOTIFIED.get(e.getKey()))) continue;
+            if (!isCompatibleWithCurrentWorld(st, client)) continue;
+            if (!isInRadius(st, pos, radius)) continue;
+
+            BLOCKED_NOTIFIED.put(e.getKey(), st.url());
+            player.sendSystemMessage(PREFIX.copy().append(
+                Component.translatable("text.collins.sites.blocked", UrlPolicy.displayHost(st.url()))
+                    .setStyle(Style.EMPTY.withColor(YELLOW))));
+        }
+    }
+
+    // Addresses already reported as over the cache limit, with the limit then.
+    private static final Map<String, Long> TOO_LARGE_NOTIFIED = new ConcurrentHashMap<>();
+
+    /**
+     * Tells the player, once per address and limit, that a video was not
+     * downloaded because it is bigger than their video cache limit. Safe to
+     * call from any thread.
+     */
+    public static void notifyOverCacheLimit(String url, long limitBytes) {
+        if (url == null) return;
+        Long previous = TOO_LARGE_NOTIFIED.put(url, limitBytes);
+        if (previous != null && previous == limitBytes) return;
+        if (TOO_LARGE_NOTIFIED.size() > 256) TOO_LARGE_NOTIFIED.clear();
+        long gb = limitBytes / (1024L * 1024L * 1024L);
+        Minecraft client = Minecraft.getInstance();
+        client.execute(() -> {
+            Player player = client.player;
+            if (player == null) return;
+            player.sendSystemMessage(PREFIX.copy().append(
+                Component.translatable("text.collins.cache.too_large", gb)
+                    .setStyle(Style.EMPTY.withColor(YELLOW))));
+        });
+    }
+
+    // Same centre and radius maths as VideoScreen.isInHearRadius.
+    private static boolean isInRadius(ScreenState st, Vec3 pos, int radiusBlocks) {
+        if (pos == null) return false;
+        if (radiusBlocks <= 0) return true;
+
+        double cx = (st.minX() + st.maxX() + 1) * 0.5;
+        double cy = (st.minY() + st.maxY() + 1) * 0.5;
+        double cz = (st.minZ() + st.maxZ() + 1) * 0.5;
+
+        double dx = pos.x - cx;
+        double dy = pos.y - cy;
+        double dz = pos.z - cz;
+
+        double r = (double) radiusBlocks;
+        return (dx * dx + dy * dy + dz * dz) <= (r * r);
     }
 
     private static MutableComponent buildActionBarText(VideoScreen nearest, long serverNowMs) {
@@ -333,6 +449,8 @@ public final class VideoScreenManager {
             s.tickPlayback(pos, radius, globalVolume, serverNowMs);
         }
 
+        notifyBlocked(client, p, pos, radius);
+
         CollinsClientConfig cfg = CollinsClientConfig.get();
         if (cfg.renderVideo && cfg.actionbarTimeline && !(client.gui.screen() instanceof ChatScreen)) {
             long now = System.currentTimeMillis();
@@ -373,6 +491,8 @@ public final class VideoScreenManager {
         VideoAudioPlayer.shutdownAll();
         for (VideoScreen s : SCREENS.values()) s.stop();
         SCREENS.clear();
+        BLOCKED.clear();
+        BLOCKED_NOTIFIED.clear();
     }
 
     public static void stopAllPlayback() {

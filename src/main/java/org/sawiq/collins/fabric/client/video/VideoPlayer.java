@@ -201,6 +201,7 @@ public final class VideoPlayer {
         if (!(u0.startsWith("http://") || u0.startsWith("https://"))) return null;
 
         String hash = sha256Hex(key);
+        if (refusedAsTooLarge(hash)) return null;
         Object lock = DISK_CACHE_LOCKS.computeIfAbsent(hash, k -> new Object());
 
         synchronized (lock) {
@@ -232,14 +233,14 @@ public final class VideoPlayer {
                 if (existing != null && Files.isRegularFile(existing)) {
                     try {
                         long sz = Files.size(existing);
-                        if (sz > 0 && sz <= DISK_CACHE_MAX_BYTES) {
+                        if (sz > 0 && sz <= cacheLimitBytes()) {
                             // Р СџРЎР‚Р С•Р Р†Р ВµРЎР‚РЎРЏР ВµР С Р Р†Р В°Р В»Р С‘Р Т‘Р Р…Р С•РЎРѓРЎвЂљРЎРЉ Р С”РЎРЊРЎв‚¬Р В° РЎвЂЎР ВµРЎР‚Р ВµР В· FFmpeg
                             if (isValidMediaFile(existing)) {
                                 try {
                                     Files.setLastModifiedTime(existing, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
                                 } catch (Exception ignored) {
                                 }
-                                enforceDiskCacheLimit(dir, DISK_CACHE_MAX_BYTES);
+                                enforceDiskCacheLimit(existing, cacheLimitBytes());
                                 DISK_CACHE_LAST_FAIL_MS.remove(hash);
                                 dbg("cacheFallback: using valid existing file keyHash=" + hash);
                                 // Р Р€Р Р†Р ВµР Т‘Р С•Р СР В»РЎРЏР ВµР С Р С• Р С‘РЎРѓР С—Р С•Р В»РЎРЉР В·Р С•Р Р†Р В°Р Р…Р С‘Р С‘ РЎРѓРЎС“РЎвЂ°Р ВµРЎРѓРЎвЂљР Р†РЎС“РЎР‹РЎвЂ°Р ВµР С–Р С• Р С”РЎРЊРЎв‚¬Р В°
@@ -267,7 +268,7 @@ public final class VideoPlayer {
                     return null;
                 }
 
-                enforceDiskCacheLimit(dir, DISK_CACHE_MAX_BYTES);
+                enforceDiskCacheLimit(null, cacheLimitBytes());
 
                 Path tmp = dir.resolve(hash + ".part");
                 try {
@@ -374,10 +375,15 @@ public final class VideoPlayer {
                 } catch (Exception ignored) {
                 }
                 dbg("cacheFallback: contentType=" + ct + " contentLength=" + declaredLen + " finalUrl=" + cur);
-                if (declaredLen > DISK_CACHE_MAX_BYTES) {
+                if (declaredLen > cacheLimitBytes()) {
                     c.disconnect();
                     DISK_CACHE_LAST_FAIL_MS.put(hash, System.currentTimeMillis());
+                    markTooLarge(hash, key);
                     return null;
+                }
+                if (declaredLen > 0) {
+                    // Make room for the new file before writing it.
+                    enforceDiskCacheLimit(null, cacheLimitBytes() - declaredLen);
                 }
 
                 String ext = guessCacheExtension(cur, ct);
@@ -462,12 +468,13 @@ public final class VideoPlayer {
                             }
                         }
 
-                        if (written > DISK_CACHE_MAX_BYTES) {
+                        if (written > cacheLimitBytes()) {
                             try {
                                 Files.deleteIfExists(tmp);
                             } catch (Exception ignored) {
                             }
                             DISK_CACHE_LAST_FAIL_MS.put(hash, System.currentTimeMillis());
+                            markTooLarge(hash, key);
                             return null;
                         }
                     }
@@ -497,7 +504,8 @@ public final class VideoPlayer {
 
                 try {
                     long sz = Files.size(dst);
-                    if (sz <= 0 || sz > DISK_CACHE_MAX_BYTES) {
+                    if (sz > cacheLimitBytes()) markTooLarge(hash, key);
+                    if (sz <= 0 || sz > cacheLimitBytes()) {
                         try {
                             Files.deleteIfExists(dst);
                         } catch (Exception ignored) {
@@ -508,7 +516,7 @@ public final class VideoPlayer {
                 } catch (Exception ignored) {
                 }
 
-                enforceDiskCacheLimit(dir, DISK_CACHE_MAX_BYTES);
+                enforceDiskCacheLimit(dst, cacheLimitBytes());
                 DISK_CACHE_LAST_FAIL_MS.remove(hash);
                 return new CacheResult(dst, ct);
             } catch (Exception e) {
@@ -616,7 +624,18 @@ public final class VideoPlayer {
             });
     private static final long META_TTL_MS = 15L * 60L * 1000L;
 
-    private static final long DISK_CACHE_MAX_BYTES = 16L * 1024L * 1024L * 1024L;
+    /**
+     * Most bytes the downloaded-video cache may use, all folders together,
+     * and also the largest single video that is downloaded. Set by the
+     * player in the Collins settings ({@code cacheLimitGb}).
+     */
+    static long cacheLimitBytes() {
+        try {
+            return org.sawiq.collins.fabric.client.config.CollinsClientConfig.get().cacheLimitBytes();
+        } catch (Exception e) {
+            return (long) org.sawiq.collins.fabric.client.config.CollinsClientConfig.DEFAULT_CACHE_LIMIT_GB * 1024L * 1024L * 1024L;
+        }
+    }
     private static final long DISK_CACHE_FAIL_COOLDOWN_MS = 10_000L;
 
     public boolean isRunning() {
@@ -638,6 +657,34 @@ public final class VideoPlayer {
                     return size() > DISK_CACHE_LAST_FAIL_MAX;
                 }
             });
+
+    /**
+     * Direct-download addresses (by hash) refused as bigger than the cache
+     * limit, with the limit then, so a looping screen does not download
+     * the same file again on every retry. Bounded like the map above.
+     */
+    @SuppressWarnings("serial")
+    private static final java.util.Map<String, Long> DISK_TOO_LARGE =
+        java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<String, Long>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, Long> eldest) {
+                    return size() > DISK_CACHE_LAST_FAIL_MAX;
+                }
+            });
+
+    /** Remembers that this address is bigger than the cache limit and tells the player. */
+    private static void markTooLarge(String hash, String url) {
+        long limit = cacheLimitBytes();
+        DISK_TOO_LARGE.put(hash, limit);
+        VideoScreenManager.notifyOverCacheLimit(url, limit);
+    }
+
+    /** True when this address was refused at a cache limit at least as high as the current one. */
+    private static boolean refusedAsTooLarge(String hash) {
+        Long refusedAt = DISK_TOO_LARGE.get(hash);
+        return refusedAt != null && cacheLimitBytes() <= refusedAt;
+    }
 
     private record CacheResult(Path path, String contentType) {
     }
@@ -804,6 +851,7 @@ public final class VideoPlayer {
     public void stop() {
         running = false;
         sessionId = 0;
+        IN_USE_FILES.remove(this);
 
         // Shut the audio line down BEFORE waiting for the playback thread.
         // javax.sound.sampled lines are documented thread-safe and
@@ -906,6 +954,7 @@ public final class VideoPlayer {
         } finally {
             // Р С›РЎвЂЎР С‘РЎвЂ°Р В°Р ВµР С РЎвЂљР С•Р В»РЎРЉР С”Р С• Р ВµРЎРѓР В»Р С‘ РЎРЊРЎвЂљР С• Р Р…Р В°РЎв‚¬Р В° РЎРѓР ВµРЎРѓРЎРѓР С‘РЎРЏ
             if (sessionId == mySessionId) {
+                IN_USE_FILES.remove(this);
                 currentAudio = null;
                 sink.onStop();
             }
@@ -990,6 +1039,9 @@ public final class VideoPlayer {
             
             if (!ytResult.isSuccess()) {
                 dbg("playOnce: YouTube resolution failed: " + ytResult.error());
+                if (YouTubeResolver.isTooLarge(ytResult)) {
+                    VideoScreenManager.notifyOverCacheLimit(originalUrl, cacheLimitBytes());
+                }
                 sink.onDownloadComplete();
                 return false;
             }
@@ -1026,6 +1078,7 @@ public final class VideoPlayer {
                     try {
                         Path p = Path.of(cachedResolved);
                         if (Files.isRegularFile(p)) {
+                            markInUse(cachedResolved, mySessionId);
                             url = toFFmpegPath(cachedResolved);
                             // Р Р€Р Р†Р ВµР Т‘Р С•Р СР В»РЎРЏР ВµР С Р С• Р С‘РЎРѓР С—Р С•Р В»РЎРЉР В·Р С•Р Р†Р В°Р Р…Р С‘Р С‘ Р С”РЎРЊРЎв‚¬Р С‘РЎР‚Р С•Р Р†Р В°Р Р…Р Р…Р С•Р С–Р С• РЎвЂћР В°Р в„–Р В»Р В°
                             try {
@@ -1058,6 +1111,13 @@ public final class VideoPlayer {
                     // were adding 2-5s per live stream startup with no benefit.
                     dbg("playOnce: live/platform stream, skipping HTTP probe and resolve");
                 } else {
+                    if (refusedAsTooLarge(sha256Hex(originalUrl.trim()))) {
+                        // Already found bigger than the cache limit: do not download it again.
+                        dbg("playOnce: over the cache limit, not downloading again url=" + originalUrl);
+                        VideoScreenManager.notifyOverCacheLimit(originalUrl, cacheLimitBytes());
+                        sink.onDownloadComplete();
+                        return false;
+                    }
                     String resolved = tryResolveUrl(url);
                     if (resolved != null) {
                         dbg("playOnce: resolved url=" + resolved);
@@ -1233,6 +1293,7 @@ public final class VideoPlayer {
             }
             // Р вЂќР С‘Р В°Р С–Р Р…Р С•РЎРѓРЎвЂљР С‘Р С”Р В° Р В»Р С•Р С”Р В°Р В»РЎРЉР Р…Р С•Р С–Р С• РЎвЂћР В°Р в„–Р В»Р В° Р С—Р ВµРЎР‚Р ВµР Т‘ FFmpeg
             if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                markInUse(url, mySessionId);
                 try {
                     Path p = Path.of(url);
                     boolean exists = Files.exists(p);
@@ -1307,6 +1368,8 @@ public final class VideoPlayer {
                 sink.onDuration(durationMs);
             }
         }
+
+        markInUse(url, mySessionId);
 
         if (videoW <= 0 || videoH <= 0) {
             return false;
@@ -1889,6 +1952,7 @@ public final class VideoPlayer {
         if (!(u.startsWith("http://") || u.startsWith("https://"))) return null;
 
         String hash = sha256Hex(key);
+        if (refusedAsTooLarge(hash)) return null;
         Object lock = DISK_CACHE_LOCKS.computeIfAbsent(hash, k -> new Object());
 
         synchronized (lock) {
@@ -1920,14 +1984,14 @@ public final class VideoPlayer {
                 if (existing != null && Files.isRegularFile(existing)) {
                     try {
                         long sz = Files.size(existing);
-                        if (sz > 0 && sz <= DISK_CACHE_MAX_BYTES) {
+                        if (sz > 0 && sz <= cacheLimitBytes()) {
                             // Р СџРЎР‚Р С•Р Р†Р ВµРЎР‚РЎРЏР ВµР С Р Р†Р В°Р В»Р С‘Р Т‘Р Р…Р С•РЎРѓРЎвЂљРЎРЉ Р С”РЎРЊРЎв‚¬Р В° РЎвЂЎР ВµРЎР‚Р ВµР В· FFmpeg
                             if (isValidMediaFile(existing)) {
                                 try {
                                     Files.setLastModifiedTime(existing, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
                                 } catch (Exception ignored) {
                                 }
-                                enforceDiskCacheLimit(dir, DISK_CACHE_MAX_BYTES);
+                                enforceDiskCacheLimit(existing, cacheLimitBytes());
                                 DISK_CACHE_LAST_FAIL_MS.remove(hash);
                                 dbg("cache: using valid existing file keyHash=" + hash);
                                 // Р Р€Р Р†Р ВµР Т‘Р С•Р СР В»РЎРЏР ВµР С Р С• Р С‘РЎРѓР С—Р С•Р В»РЎРЉР В·Р С•Р Р†Р В°Р Р…Р С‘Р С‘ РЎРѓРЎС“РЎвЂ°Р ВµРЎРѓРЎвЂљР Р†РЎС“РЎР‹РЎвЂ°Р ВµР С–Р С• Р С”РЎРЊРЎв‚¬Р В°
@@ -1955,7 +2019,7 @@ public final class VideoPlayer {
                     return null;
                 }
 
-                enforceDiskCacheLimit(dir, DISK_CACHE_MAX_BYTES);
+                enforceDiskCacheLimit(null, cacheLimitBytes());
 
                 Path tmp = dir.resolve(hash + ".part");
                 try {
@@ -1986,10 +2050,15 @@ public final class VideoPlayer {
                 } catch (Exception ignored) {
                 }
                 dbg("cache: contentLength=" + declaredLen);
-                if (declaredLen > DISK_CACHE_MAX_BYTES) {
+                if (declaredLen > cacheLimitBytes()) {
                     c.disconnect();
                     DISK_CACHE_LAST_FAIL_MS.put(hash, System.currentTimeMillis());
+                    markTooLarge(hash, key);
                     return null;
+                }
+                if (declaredLen > 0) {
+                    // Make room for the new file before writing it.
+                    enforceDiskCacheLimit(null, cacheLimitBytes() - declaredLen);
                 }
 
                 String actualCt = null;
@@ -2081,12 +2150,13 @@ public final class VideoPlayer {
                             }
                         }
 
-                        if (written > DISK_CACHE_MAX_BYTES) {
+                        if (written > cacheLimitBytes()) {
                             try {
                                 Files.deleteIfExists(tmp);
                             } catch (Exception ignored) {
                             }
                             DISK_CACHE_LAST_FAIL_MS.put(hash, System.currentTimeMillis());
+                            markTooLarge(hash, key);
                             return null;
                         }
                     }
@@ -2118,7 +2188,8 @@ public final class VideoPlayer {
                 try {
                     long sz = Files.size(dst);
                     dbg("cache: final file size=" + sz);
-                    if (sz <= 0 || sz > DISK_CACHE_MAX_BYTES) {
+                    if (sz > cacheLimitBytes()) markTooLarge(hash, key);
+                    if (sz <= 0 || sz > cacheLimitBytes()) {
                         dbg("cache: invalid file size, deleting");
                         try {
                             Files.deleteIfExists(dst);
@@ -2131,7 +2202,7 @@ public final class VideoPlayer {
                     dbg("cache: failed to check file size: " + e.getMessage());
                 }
 
-                enforceDiskCacheLimit(dir, DISK_CACHE_MAX_BYTES);
+                enforceDiskCacheLimit(dst, cacheLimitBytes());
                 DISK_CACHE_LAST_FAIL_MS.remove(hash);
                 dbg("cache: success, returning " + dst);
                 return dst;
@@ -2273,54 +2344,88 @@ public final class VideoPlayer {
         }
     }
 
-    private static void enforceDiskCacheLimit(Path dir, long maxBytes) {
+    /**
+     * Trims the whole cache (this folder and every platform folder yt-dlp
+     * downloads into) to {@code maxBytes}, oldest files first. Never deletes
+     * {@code keep}, a file any player is using, a file a running yt-dlp
+     * download is writing, or a partly downloaded file.
+     */
+    private static void enforceDiskCacheLimit(Path keep, long maxBytes) {
+        enforceCacheLimit(keep, maxBytes);
+    }
+
+    // getCacheDir() can start a cmd process on Windows; work it out once for the limit.
+    private static volatile Path cacheDirForLimit;
+
+    /** Every folder the downloaded-video cache uses. */
+    static List<Path> cacheRoots() {
+        Path dir = cacheDirForLimit;
+        if (dir == null) {
+            dir = getCacheDir();
+            cacheDirForLimit = dir;
+        }
+        List<Path> roots = new ArrayList<>();
+        roots.add(dir);
+        roots.addAll(YouTubeResolver.getPlatformCacheDirs());
+        return roots;
+    }
+
+    /** See {@link #enforceDiskCacheLimit}. Also called by {@link YouTubeResolver} after a download. */
+    static CacheLimiter.Result enforceCacheLimit(Path keep, long maxBytes) {
         try {
-            if (!Files.isDirectory(dir)) return;
-
-            List<Path> files = new ArrayList<>();
-            long total = 0L;
-            try (var s = Files.list(dir)) {
-                s.forEach(p -> {
-                    try {
-                        if (Files.isRegularFile(p) && !p.getFileName().toString().endsWith(".part")) {
-                            files.add(p);
-                        }
-                    } catch (Exception ignored) {
-                    }
-                });
+            java.util.Set<Path> protectedFiles = new java.util.HashSet<>(IN_USE_FILES.values());
+            if (keep != null) protectedFiles.add(keep);
+            CacheLimiter.Result r = CacheLimiter.enforce(cacheRoots(), Math.max(0L, maxBytes), protectedFiles,
+                    YouTubeResolver::isActiveDownloadFile);
+            if (r.filesDeleted() > 0) {
+                dbg("cacheLimit: deleted " + r.filesDeleted() + " file(s), " + r.bytesBefore() + " -> " + r.bytesAfter()
+                        + " bytes, limit " + maxBytes);
             }
+            return r;
+        } catch (Exception e) {
+            dbg("cacheLimit: failed " + e);
+            return null;
+        }
+    }
 
-            for (Path p : files) {
-                try {
-                    total += Files.size(p);
-                } catch (Exception ignored) {
-                }
-            }
+    private static final java.util.concurrent.atomic.AtomicBoolean CACHE_TRIM_QUEUED =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
-            if (total <= maxBytes) return;
+    /**
+     * Trims the cache to the configured limit on a background daemon
+     * thread. Calls made while a trim is already queued are merged into it.
+     * Use after the limit changes and at start-up.
+     */
+    public static void enforceCacheLimitAsync() {
+        if (!CACHE_TRIM_QUEUED.compareAndSet(false, true)) return;
+        Thread t = new Thread(() -> {
+            // Clear first: a call that arrives while this trim runs queues one more.
+            CACHE_TRIM_QUEUED.set(false);
+            enforceCacheLimit(null, cacheLimitBytes());
+        }, "Collins-CacheTrim");
+        t.setDaemon(true);
+        t.setPriority(Thread.MIN_PRIORITY);
+        t.start();
+    }
 
-            files.sort(Comparator.comparingLong(p -> {
-                try {
-                    return Files.getLastModifiedTime(p).toMillis();
-                } catch (Exception e) {
-                    return 0L;
-                }
-            }));
+    /**
+     * Local file each player is reading, so the cache limit never deletes
+     * a video while it is on screen. Players streaming over the network
+     * have no entry.
+     */
+    private static final ConcurrentHashMap<VideoPlayer, Path> IN_USE_FILES = new ConcurrentHashMap<>();
 
-            for (Path p : files) {
-                if (total <= maxBytes) break;
-                long sz = 0L;
-                try {
-                    sz = Files.size(p);
-                } catch (Exception ignored) {
-                }
-                try {
-                    Files.deleteIfExists(p);
-                } catch (Exception ignored) {
-                }
-                total -= sz;
-            }
-        } catch (Exception ignored) {
+    private void markInUse(String urlOrPath, long mySessionId) {
+        if (sessionId != mySessionId) return;
+        if (urlOrPath == null || urlOrPath.isBlank()
+                || urlOrPath.startsWith("http://") || urlOrPath.startsWith("https://")) {
+            IN_USE_FILES.remove(this);
+            return;
+        }
+        try {
+            IN_USE_FILES.put(this, Path.of(urlOrPath));
+        } catch (Exception e) {
+            IN_USE_FILES.remove(this);
         }
     }
 
@@ -2342,40 +2447,31 @@ public final class VideoPlayer {
     // ==================== Р вЂќР С‘РЎРѓР С”Р С•Р Р†РЎвЂ№Р в„– Р СР ВµР Р…Р ВµР Т‘Р В¶Р ВµРЎР‚ ====================
 
     /** Р ВР Р…РЎвЂћР С•РЎР‚Р СР В°РЎвЂ Р С‘РЎРЏ Р С• Р С”РЎРЊРЎв‚¬Р Вµ */
-    public record CacheInfo(Path cacheDir, long cacheSizeBytes, int fileCount, long freeSpaceBytes) {
+    public record CacheInfo(Path cacheDir, long cacheSizeBytes, int fileCount, long freeSpaceBytes, long limitBytes) {
         public long cacheSizeMb() { return cacheSizeBytes / (1024L * 1024L); }
+        public long limitGb() { return limitBytes / (1024L * 1024L * 1024L); }
         public long freeSpaceMb() { return freeSpaceBytes / (1024L * 1024L); }
         public long freeSpaceGb() { return freeSpaceBytes / (1024L * 1024L * 1024L); }
     }
 
     /** Р СџР С•Р В»РЎС“РЎвЂЎР С‘РЎвЂљРЎРЉ Р С‘Р Р…РЎвЂћР С•РЎР‚Р СР В°РЎвЂ Р С‘РЎР‹ Р С• Р С”РЎРЊРЎв‚¬Р Вµ */
     public static CacheInfo getCacheInfo() {
+        long limit = cacheLimitBytes();
         try {
             Path dir = getCacheDir();
-            if (!Files.isDirectory(dir)) {
-                long freeSpace = dir.getRoot() != null ?
-                    dir.getRoot().toFile().getFreeSpace() : 0L;
-                return new CacheInfo(dir, 0L, 0, freeSpace);
+            // Counts every cache folder (platform downloads included) the
+            // same way the cache limit does.
+            CacheLimiter.Usage usage = CacheLimiter.measure(cacheRoots());
+            long freeSpace;
+            if (Files.isDirectory(dir)) {
+                freeSpace = dir.toFile().getFreeSpace();
+            } else {
+                Path root = dir.toAbsolutePath().getRoot();
+                freeSpace = root != null ? root.toFile().getFreeSpace() : 0L;
             }
-
-            long totalSize = 0L;
-            int count = 0;
-            try (var stream = Files.walk(dir)) {
-                var files = stream.toList();
-                for (Path p : files) {
-                    if (Files.isRegularFile(p) && !p.getFileName().toString().endsWith(".part")) {
-                        try {
-                            totalSize += Files.size(p);
-                            count++;
-                        } catch (Exception ignored) {}
-                    }
-                }
-            }
-
-            long freeSpace = dir.toFile().getFreeSpace();
-            return new CacheInfo(dir, totalSize, count, freeSpace);
+            return new CacheInfo(dir, usage.bytes(), usage.files(), freeSpace, limit);
         } catch (Exception e) {
-            return new CacheInfo(Path.of("collins-cache"), 0L, 0, 0L);
+            return new CacheInfo(Path.of("collins-cache"), 0L, 0, 0L, limit);
         }
     }
 
@@ -2383,6 +2479,7 @@ public static long clearCache() {
         try {
             Path dir = getCacheDir();
             YouTubeResolver.clearCache();
+            DISK_TOO_LARGE.clear();
             if (!Files.isDirectory(dir)) return 0L;
 
             long deleted = 0L;
@@ -2418,16 +2515,9 @@ public static boolean deleteCachedFile(String filePath) {
     }
 
     private static void tryDeleteYoutubeMetadata(Path videoFile) {
-        try {
-            Path parent = videoFile.getParent();
-            if (parent == null || !"youtube".equalsIgnoreCase(parent.getFileName().toString())) return;
-
-            String fileName = videoFile.getFileName().toString();
-            int dot = fileName.lastIndexOf('.');
-            String baseName = dot > 0 ? fileName.substring(0, dot) : fileName;
-            Files.deleteIfExists(parent.resolve(baseName + ".duration.txt"));
-        } catch (Exception ignored) {
-        }
+        // Platform downloads keep their duration in <id>.duration.txt beside
+        // the video (any platform folder, not only youtube/).
+        CacheLimiter.deleteSidecarIfOrphaned(videoFile);
     }
 
 public static void openCacheFolder() {
