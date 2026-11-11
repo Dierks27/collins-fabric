@@ -1,6 +1,7 @@
 package org.sawiq.collins.fabric.client.command;
 
 import com.mojang.brigadier.Command;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
@@ -44,7 +45,13 @@ public final class CollinsClientCommands {
                             }
                             return builder.buildFuture();
                         })
-                        .executes(ctx -> setQuality(StringArgumentType.getString(ctx, "value"))))));
+                        .executes(ctx -> setQuality(StringArgumentType.getString(ctx, "value")))))
+                .then(ClientCommands.literal("sites")
+                    .executes(ctx -> showSites())
+                    .then(ClientCommands.literal("on")
+                        .executes(ctx -> setOnlyAllowedSites(true)))
+                    .then(ClientCommands.literal("off")
+                        .executes(ctx -> setOnlyAllowedSites(false)))));
 
             dispatcher.register(ClientCommands.literal("collins-cache")
                 .executes(ctx -> showCacheInfo())
@@ -55,7 +62,12 @@ public final class CollinsClientCommands {
                 .then(ClientCommands.literal("delete")
                     .executes(ctx -> deletePendingFile()))
                 .then(ClientCommands.literal("clear")
-                    .executes(ctx -> clearCache())));
+                    .executes(ctx -> clearCache()))
+                .then(ClientCommands.literal("limit")
+                    .executes(ctx -> showCacheLimit())
+                    .then(ClientCommands.argument("gb", IntegerArgumentType.integer(
+                            CollinsClientConfig.MIN_CACHE_LIMIT_GB, CollinsClientConfig.MAX_CACHE_LIMIT_GB))
+                        .executes(ctx -> setCacheLimit(IntegerArgumentType.getInteger(ctx, "gb"))))));
 
             dispatcher.register(ClientCommands.literal("collins-yt")
                 .executes(ctx -> showYouTubeInfo())
@@ -81,6 +93,7 @@ public final class CollinsClientCommands {
         if (client.player == null) return 0;
 
         VideoPlayer.CacheInfo info = VideoPlayer.getCacheInfo();
+        int limitGb = CollinsClientConfig.get().cacheLimitGb;
 
         Component msg = PREFIX.copy()
             .append(Component.translatable("text.collins.cache.title").setStyle(Style.EMPTY.withColor(GREEN)))
@@ -89,7 +102,7 @@ public final class CollinsClientCommands {
             .append(value(info.cacheDir()))
             .append(Component.literal("\n"))
             .append(label("text.collins.cache.files"))
-            .append(Component.translatable("text.collins.cache.files_value", info.fileCount(), info.cacheSizeMb()).setStyle(Style.EMPTY.withColor(ChatFormatting.WHITE)))
+            .append(Component.translatable("text.collins.cache.files_value_limit", info.fileCount(), info.cacheSizeMb(), limitGb).setStyle(Style.EMPTY.withColor(ChatFormatting.WHITE)))
             .append(Component.literal("\n"))
             .append(label("text.collins.cache.free_space"))
             .append(Component.translatable("text.collins.cache.free_space_value", info.freeSpaceGb()).setStyle(Style.EMPTY.withColor(ChatFormatting.WHITE)))
@@ -97,9 +110,80 @@ public final class CollinsClientCommands {
             .append(label("text.collins.commands"))
             .append(Component.literal("/collins-cache open").setStyle(Style.EMPTY.withColor(YELLOW)))
             .append(Component.literal(" | ").setStyle(Style.EMPTY.withColor(GRAY)))
+            .append(Component.literal("/collins-cache limit <gb>").setStyle(Style.EMPTY.withColor(YELLOW)))
+            .append(Component.literal(" | ").setStyle(Style.EMPTY.withColor(GRAY)))
             .append(Component.literal("/collins-cache clear").setStyle(Style.EMPTY.withColor(RED)));
 
         client.player.sendSystemMessage(msg);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int showCacheLimit() {
+        Minecraft client = Minecraft.getInstance();
+        if (client.player == null) return 0;
+
+        client.player.sendSystemMessage(PREFIX.copy().append(
+            Component.translatable("text.collins.cache.limit.current", CollinsClientConfig.get().cacheLimitGb,
+                    CollinsClientConfig.MIN_CACHE_LIMIT_GB, CollinsClientConfig.MAX_CACHE_LIMIT_GB)
+                .setStyle(Style.EMPTY.withColor(GREEN))));
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int setCacheLimit(int gb) {
+        Minecraft client = Minecraft.getInstance();
+        if (client.player == null) return 0;
+
+        CollinsClientConfig cfg = CollinsClientConfig.get();
+        cfg.cacheLimitGb = gb;
+        CollinsClientConfig.save();
+        VideoPlayer.enforceCacheLimitAsync();
+
+        client.player.sendSystemMessage(PREFIX.copy().append(
+            Component.translatable("text.collins.cache.limit.set", cfg.cacheLimitGb)
+                .setStyle(Style.EMPTY.withColor(GREEN))));
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int showSites() {
+        Minecraft client = Minecraft.getInstance();
+        if (client.player == null) return 0;
+
+        CollinsClientConfig cfg = CollinsClientConfig.get();
+        boolean on = cfg.onlyAllowedSites;
+
+        Component msg = PREFIX.copy()
+            .append(Component.translatable("text.collins.sites.title").setStyle(Style.EMPTY.withColor(GREEN)))
+            .append(Component.literal("\n"))
+            .append(label("text.collins.sites.status"))
+            .append(Component.translatable(on ? "text.collins.sites.status.on" : "text.collins.sites.status.off")
+                .setStyle(Style.EMPTY.withColor(on ? GREEN : RED)))
+            .append(Component.literal("\n"))
+            .append(label("text.collins.sites.hosts"))
+            .append(cfg.allowedHosts.isEmpty()
+                ? Component.translatable("text.collins.sites.hosts.none").setStyle(Style.EMPTY.withColor(RED))
+                : value(String.join(", ", cfg.allowedHosts)))
+            .append(Component.literal("\n"))
+            .append(label("text.collins.commands"))
+            .append(Component.literal("/collinsc sites on").setStyle(Style.EMPTY.withColor(YELLOW)))
+            .append(Component.literal(" | ").setStyle(Style.EMPTY.withColor(GRAY)))
+            .append(Component.literal("/collinsc sites off").setStyle(Style.EMPTY.withColor(YELLOW)));
+
+        client.player.sendSystemMessage(msg);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int setOnlyAllowedSites(boolean on) {
+        Minecraft client = Minecraft.getInstance();
+        if (client.player == null) return 0;
+
+        CollinsClientConfig cfg = CollinsClientConfig.get();
+        cfg.onlyAllowedSites = on;
+        CollinsClientConfig.save();
+        VideoScreenManager.reapplySync();
+
+        client.player.sendSystemMessage(PREFIX.copy().append(
+            Component.translatable(on ? "text.collins.sites.set.on" : "text.collins.sites.set.off")
+                .setStyle(Style.EMPTY.withColor(on ? GREEN : YELLOW))));
         return Command.SINGLE_SUCCESS;
     }
 
